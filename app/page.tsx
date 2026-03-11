@@ -1,64 +1,210 @@
-import Image from "next/image";
+"use client";
+
+import { useRef, useState } from "react";
+import {
+  collection,
+  doc,
+  setDoc,
+  getDoc,
+  updateDoc,
+  onSnapshot,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 export default function Home() {
+  const [roomId, setRoomId] = useState("");
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const pc1 = useRef<RTCPeerConnection | null>(null);
+
+  const localStream = useRef<MediaStream | null>(null);
+
+  const startCamera = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true,
+    });
+
+    localStream.current = stream;
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
+    }
+  };
+
+  const createPeerConnection = () => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    // show remote video
+    pc.ontrack = (event) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
+    };
+
+    // send our local stream
+    localStream.current?.getTracks().forEach((track) => {
+      pc.addTrack(track, localStream.current!);
+    });
+
+    return pc;
+  };
+
+  const createRoom = async () => {
+    if (!localStream.current) {
+      alert("Start camera first");
+      return;
+    }
+    const roomRef = doc(collection(db, "rooms"));
+
+    pc1.current = createPeerConnection();
+
+    if (!pc1.current) return;
+
+    const offer = await pc1.current.createOffer();
+    await pc1.current.setLocalDescription(offer);
+
+    const callerCandidatesCollection = collection(roomRef, "callerCandidates");
+
+    pc1.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        setDoc(
+          doc(callerCandidatesCollection),
+          event.candidate.toJSON()
+        );
+      }
+    };
+
+    await setDoc(roomRef, { offer });
+
+    onSnapshot(roomRef, async (snapshot) => {
+      const data = snapshot.data();
+
+      if (!pc1.current?.currentRemoteDescription && data?.answer) {
+        await pc1.current?.setRemoteDescription(
+          new RTCSessionDescription(data.answer)
+        );
+      }
+    });
+
+    setRoomId(roomRef.id);
+
+    const calleeCandidatesCollection = collection(roomRef, "calleeCandidates");
+
+    onSnapshot(calleeCandidatesCollection, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "added") {
+          const candidate = new RTCIceCandidate(change.doc.data());
+
+          pc1.current?.addIceCandidate(candidate);
+        }
+      });
+    });
+  };
+
+  const joinRoom = async () => {
+    if (!localStream.current) {
+      alert("Start camera first");
+      return;
+    }
+    const roomRef = doc(db, "rooms", roomId);
+    const roomSnapshot = await getDoc(roomRef);
+
+    if (!roomSnapshot.exists()) {
+      alert("Room does not exist");
+      return;
+    }
+    
+    pc1.current = createPeerConnection();
+
+    if (!pc1.current) return;
+
+    const calleeCandidatesCollection = collection(roomRef, "calleeCandidates");
+
+    pc1.current.onicecandidate = (event) => {
+      if (event.candidate) {
+        setDoc(
+          doc(calleeCandidatesCollection),
+          event.candidate.toJSON()
+        );
+      }
+    };
+
+    const offer = roomSnapshot.data()?.offer;
+
+    await pc1.current.setRemoteDescription(
+      new RTCSessionDescription(offer)
+    );
+
+    const answer = await pc1.current.createAnswer();
+    await pc1.current.setLocalDescription(answer);
+
+    await updateDoc(roomRef, { answer });
+
+    const callerCandidatesCollection = collection(roomRef, "callerCandidates");
+
+    onSnapshot(callerCandidatesCollection, (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === "added") {
+          const candidate = new RTCIceCandidate(change.doc.data());
+
+          pc1.current?.addIceCandidate(candidate);
+        }
+      });
+    });
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+      <main className="flex min-h-screen w-full flex-col items-center py-10 px-16 bg-white dark:bg-black  gap-10">
+        <div className="w-full flex items-center justify-center gap-5">
+          {/* User 1 */}
+          <div className="w-full flex flex-col justify-center items-center">
+            {/* video stream */}
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-3xl h-150 bg-cyan-100"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <h1 className="text-white text-2xl font-bold">User 1</h1>
+          </div>
+          {/* User 2 */}
+          <div className="w-full flex flex-col justify-center items-center">
+            {/* video stream */}
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-3xl h-150 bg-cyan-100"
+            />
+            <h1 className="text-white text-2xl font-bold">User 2</h1>
+          </div>
         </div>
+        <button
+          onClick={startCamera}
+          className="h-15 w-100 bg-white rounded-2xl text-black"
+        >
+          Start Camera
+        </button>
+        <button onClick={createRoom}>Create Room</button>
+
+        <button onClick={joinRoom}>Join Room</button>
+        <input
+          placeholder="Room ID"
+          value={roomId}
+          onChange={(e) => setRoomId(e.target.value)}
+        />
+        {/* <button
+          onClick={createOffer}
+          className="h-15 w-100 bg-white rounded-2xl text-black"
+        >
+          Create Offer
+        </button> */}
       </main>
     </div>
   );
